@@ -17,18 +17,51 @@
 - **מסך עריכה** - טבלה דו-עמודית של 13 פרמטרים עם לוח שנה מתעדכן בזמן אמת
 - **Dry Run** - הצגת מה ישתנה ללא ביצוע בפועל
 
+## דרישות מקדימות
+
+- **Python 3.10+** — [הורדה מכאן](https://www.python.org/downloads/)
+  - ב-Windows: סמנו "Add Python to PATH" בזמן ההתקנה
+  - ב-Mac: אפשר גם דרך Homebrew: `brew install python`
+
 ## התקנה
 
-### 1. התקנת תלויות Python
+### 1. שכפול הפרויקט
 
-```powershell
-python -m pip install --user -r requirements.txt
+```bash
+git clone https://github.com/ZivAlpertNV/hilan-automation.git
+cd hilan-automation
 ```
 
-### 2. התקנת דפדפן Chromium עבור Playwright
+### 2. יצירת סביבה וירטואלית (מומלץ)
 
+**Windows (PowerShell):**
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+**Mac / Linux:**
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3. התקנת תלויות Python
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. התקנת דפדפן Chromium עבור Playwright
+
+**Windows (PowerShell):**
 ```powershell
 $env:PLAYWRIGHT_BROWSERS_PATH="0"; python -m playwright install chromium
+```
+
+**Mac / Linux:**
+```bash
+python -m playwright install chromium
 ```
 
 ## שימוש
@@ -37,9 +70,11 @@ $env:PLAYWRIGHT_BROWSERS_PATH="0"; python -m playwright install chromium
 
 הדרך הכי קלה ונוחה להשתמש בכלי. הסקריפט האינטראקטיבי מדריך אותך שלב-שלב דרך כל הפרמטרים, מציג לוח שנה ויזואלי צבעוני, ומריץ את מילוי השעות בסוף.
 
-```powershell
+```bash
 python hilan_interactive.py
 ```
+
+> **Mac:** אם `python` לא עובד, נסו `python3 hilan_interactive.py`
 
 #### התהליך האינטראקטיבי (7 שלבים):
 

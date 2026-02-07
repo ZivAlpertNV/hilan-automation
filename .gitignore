@@ -18,6 +18,9 @@ env/
 # Screenshots (generated at runtime)
 screenshots/
 
+# ZIP distribution
+*.zip
+
 # OS files
 .DS_Store
 Thumbs.db
