@@ -201,6 +201,21 @@ Examples:
         help="Path to sick certificate file (required when --sick-days has 3+ days)",
     )
     parser.add_argument(
+        "--rd-days",
+        default=None,
+        help=(
+            "Days of the month to mark as reserve duty (מילואים). "
+            "Requires --rd-file. No hours or project will be filled. "
+            "Supports: individual days (1,2,3), ranges (1-6), or both (1-3,15). "
+            "Example: --rd-days 5-7"
+        ),
+    )
+    parser.add_argument(
+        "--rd-file",
+        default=None,
+        help="Path to reserve duty order file (צו מילואים). Required when --rd-days is set.",
+    )
+    parser.add_argument(
         "--month",
         type=int,
         default=None,
@@ -341,6 +356,31 @@ Examples:
         except ValueError:
             parser.error("--vacation must be comma-separated days or ranges (e.g., 1-6,15,20-22)")
 
+    # Parse reserve duty days into a set of day-of-month numbers
+    args.rd_days_set = set()
+    if args.rd_days:
+        try:
+            for part in args.rd_days.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if "-" in part:
+                    start, end = part.split("-", 1)
+                    for d in range(int(start.strip()), int(end.strip()) + 1):
+                        args.rd_days_set.add(d)
+                else:
+                    args.rd_days_set.add(int(part))
+        except ValueError:
+            parser.error("--rd-days must be comma-separated days or ranges (e.g., 5-7,10)")
+
+    # Validate rd-file requirement
+    if args.rd_days_set and not args.rd_file:
+        parser.error("--rd-file is required when --rd-days is set")
+    if args.rd_file:
+        rd_path = Path(args.rd_file)
+        if not rd_path.exists():
+            parser.error(f"--rd-file: file not found: {args.rd_file}")
+
     # Validate no overlap between vacation and sick days
     if args.vacation_days and args.sick_days_set:
         overlap = args.vacation_days & args.sick_days_set
@@ -350,7 +390,23 @@ Examples:
                 f"A day cannot be both vacation and sick."
             )
 
-    # Validate no overlap between present-dates and vacation/sick days
+    # Validate no overlap between rd-days and vacation/sick days
+    if args.rd_days_set and args.vacation_days:
+        overlap = args.rd_days_set & args.vacation_days
+        if overlap:
+            parser.error(
+                f"--rd-days and --vacation overlap on days: {sorted(overlap)}. "
+                f"A day cannot be both reserve duty and vacation."
+            )
+    if args.rd_days_set and args.sick_days_set:
+        overlap = args.rd_days_set & args.sick_days_set
+        if overlap:
+            parser.error(
+                f"--rd-days and --sick-days overlap on days: {sorted(overlap)}. "
+                f"A day cannot be both reserve duty and sick."
+            )
+
+    # Validate no overlap between present-dates and vacation/sick/rd days
     if args.present_dates and args.vacation_days:
         overlap = args.present_dates & args.vacation_days
         if overlap:
@@ -364,6 +420,13 @@ Examples:
             parser.error(
                 f"--present-dates and --sick-days overlap on days: {sorted(overlap)}. "
                 f"A day cannot be both present and sick."
+            )
+    if args.present_dates and args.rd_days_set:
+        overlap = args.present_dates & args.rd_days_set
+        if overlap:
+            parser.error(
+                f"--present-dates and --rd-days overlap on days: {sorted(overlap)}. "
+                f"A day cannot be both present and reserve duty."
             )
 
     return args
@@ -988,17 +1051,45 @@ def fill_project_field(page: Page, row: dict, project: str, logger: logging.Logg
         return False
 
 
+def discover_rd_symbol(page: Page, rows_info: list[dict], logger: logging.Logger) -> str | None:
+    """
+    Auto-discover the symbol value for "מילואים – RD" from the dropdown options.
+    Searches any available symbol <select> for an <option> whose text contains "מילואים".
+    Returns the option value (e.g., "3") or None if not found.
+    """
+    for row in rows_info:
+        if not row.get("hasSymbolSelect") or not row.get("symbolSelectId"):
+            continue
+        options = page.evaluate("""
+            (selectId) => {
+                const sel = document.getElementById(selectId);
+                if (!sel) return [];
+                return Array.from(sel.options).map(o => ({value: o.value, text: o.text}));
+            }
+        """, row["symbolSelectId"])
+        for opt in options:
+            if "מילואים" in opt.get("text", "") or "miluim" in opt.get("text", "").lower():
+                logger.info(f"Discovered RD symbol: value='{opt['value']}' text='{opt['text']}'")
+                return opt["value"]
+        break  # All dropdowns have the same options; only need to check one
+    logger.error("Could not find 'מילואים' option in symbol dropdown!")
+    return None
+
+
 def fill_all_hours(page: Page, workdays: list[date], entry_time: str,
                    exit_time: str, project: str | None,
                    present_weekdays: set, present_dates: set,
                    vacation_days: set,
                    sick_days: set, sick_file: str | None,
-                   logger: logging.Logger) -> tuple[int, int]:
+                   rd_days: set = None, rd_file: str | None = None,
+                   logger: logging.Logger = None) -> tuple[int, int]:
     """
-    Fill hours, project, reporting type, vacation, and sick days for all workdays.
+    Fill hours, project, reporting type, vacation, sick, and reserve duty days
+    for all workdays.
     The grid must already show all days (call select_all_workdays_in_calendar first).
     Returns (success_count, failure_count).
     """
+    rd_days = rd_days or set()
     success_count = 0
     failure_count = 0
     skipped_count = 0
@@ -1039,8 +1130,18 @@ def fill_all_hours(page: Page, workdays: list[date], entry_time: str,
     if sick_days:
         sick_type = "sick day declaration" if len(sick_days) <= 2 else f"sick (file: {sick_file})"
         logger.info(f"Sick days: {sorted(sick_days)} ({sick_type})")
+    if rd_days:
+        logger.info(f"Reserve duty days: {sorted(rd_days)} (file: {rd_file})")
     logger.info(f"Looking for dates: {workday_dates}")
     logger.info("-" * 60)
+
+    # Discover RD symbol value from the dropdown (if rd_days are requested)
+    rd_symbol = None
+    if rd_days:
+        rd_symbol = discover_rd_symbol(page, rows_info, logger)
+        if not rd_symbol:
+            logger.error("Cannot process reserve duty days - symbol not found in dropdown!")
+            rd_days = set()
 
     rows_needing_project_retry = []
 
@@ -1279,11 +1380,93 @@ def fill_all_hours(page: Page, workdays: list[date], entry_time: str,
                 failure_count += 1
             continue
 
+        # Handle reserve duty days: set symbol to RD, clear hours/project, upload file
+        is_rd_day = day_num in rd_days
+        if is_rd_day and rd_symbol:
+            current_symbol = row.get("currentSymbol", "")
+            has_hours = bool(row.get("currentEntry", "").strip() or row.get("currentExit", "").strip())
+            if current_symbol == rd_symbol and not has_hours:
+                logger.info(f"  {date_text}: Already set to reserve duty, skipping")
+                skipped_count += 1
+                continue
+            if row.get("hasSymbolSelect") and row.get("symbolSelectId"):
+                try:
+                    dismiss_modal(page, logger)
+
+                    entry_id = row.get('entryInputId')
+                    exit_id = row.get('exitInputId')
+                    row_index = row['rowIndex']
+                    page.evaluate("""
+                        (params) => {
+                            const entryEl = document.getElementById(params.entryId);
+                            const exitEl = document.getElementById(params.exitId);
+                            if (entryEl) { entryEl.value = ''; }
+                            if (exitEl) { exitEl.value = ''; }
+                            const projectTd = document.querySelector(
+                                `td[id*="Project"][id*="_EmployeeReports_row_${params.rowIndex}_"]`
+                            );
+                            if (projectTd) {
+                                const textInput = projectTd.querySelector('input[type="text"]');
+                                if (textInput) { textInput.value = ''; textInput.setAttribute('sv', ''); }
+                            }
+                            const hiddenInput = document.querySelector(
+                                `input[id*="ProjectForView_EmployeeReports_row_${params.rowIndex}_"][id*="AutoCompleteExtender_value"]`
+                            );
+                            if (hiddenInput) { hiddenInput.value = ''; }
+                        }
+                    """, {"entryId": entry_id or "", "exitId": exit_id or "", "rowIndex": row_index})
+
+                    select_selector = f"select[id='{row['symbolSelectId']}']"
+                    page.select_option(select_selector, rd_symbol)
+                    logger.info(f"  {date_text}: Set to RESERVE DUTY (hours cleared)")
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=10000)
+                    except PlaywrightTimeoutError:
+                        pass
+                    time.sleep(1)
+                    dismiss_modal(page, logger)
+
+                    # Upload reserve duty order file
+                    if rd_file:
+                        try:
+                            upload_span = page.query_selector(
+                                f"span[id*='File_EmployeeReports_row_{row_index}_'][id*='Attach']"
+                            )
+                            if upload_span and upload_span.is_visible():
+                                with page.expect_file_chooser(timeout=10000) as fc_info:
+                                    upload_span.click(force=True)
+                                file_chooser = fc_info.value
+                                file_chooser.set_files(rd_file)
+                                time.sleep(2)
+                                try:
+                                    page.wait_for_load_state("networkidle", timeout=15000)
+                                except PlaywrightTimeoutError:
+                                    pass
+                                dismiss_modal(page, logger)
+                                logger.info(f"    RD file uploaded: {rd_file}")
+                            else:
+                                logger.warning(f"    Upload link not found for row {row_index}")
+                        except Exception as e:
+                            logger.warning(f"    Error uploading RD file: {e}")
+
+                    success_count += 1
+                    postback_occurred = True
+                    break
+                except Exception as e:
+                    logger.error(f"  {date_text}: Error setting reserve duty: {e}")
+                    failure_count += 1
+            else:
+                logger.warning(f"  {date_text}: No symbol dropdown for reserve duty")
+                failure_count += 1
+            continue
+
         # Handle symbol corrections that trigger postbacks
         # This runs for ALL workdays, not just when present-days is set.
         if row.get("hasSymbolSelect"):
             current_symbol = row.get("currentSymbol", "")
             absence_symbols = {"2", "5", "6"}  # vacation, sick day decl, sick
+            if rd_symbol:
+                absence_symbols.add(rd_symbol)
 
             # Determine expected symbol for this day
             matching_wd = None
@@ -1463,10 +1646,70 @@ def fill_all_hours(page: Page, workdays: list[date], entry_time: str,
                         logger.error(f"  {date_text}: Error setting sick (rescan): {e}")
                 continue
 
+            # Check reserve duty days that still need setting
+            if day_num in rd_days and rd_symbol:
+                current_symbol = row.get("currentSymbol", "")
+                has_hours = bool(row.get("currentEntry", "").strip() or row.get("currentExit", "").strip())
+                if current_symbol == rd_symbol and not has_hours:
+                    continue  # Already correct
+                if row.get("hasSymbolSelect") and row.get("symbolSelectId"):
+                    try:
+                        dismiss_modal(page, logger)
+                        entry_id = row.get('entryInputId')
+                        exit_id = row.get('exitInputId')
+                        row_index = row['rowIndex']
+                        page.evaluate("""
+                            (params) => {
+                                const e = document.getElementById(params.entryId);
+                                const x = document.getElementById(params.exitId);
+                                if (e) { e.value = ''; } if (x) { x.value = ''; }
+                            }
+                        """, {"entryId": entry_id or "", "exitId": exit_id or ""})
+                        select_selector = f"select[id='{row['symbolSelectId']}']"
+                        page.select_option(select_selector, rd_symbol)
+                        logger.info(f"  {date_text}: Set to RESERVE DUTY (rescan)")
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=10000)
+                        except PlaywrightTimeoutError:
+                            pass
+                        time.sleep(1)
+                        dismiss_modal(page, logger)
+
+                        if rd_file:
+                            try:
+                                upload_span = page.query_selector(
+                                    f"span[id*='File_EmployeeReports_row_{row_index}_'][id*='Attach']"
+                                )
+                                if upload_span and upload_span.is_visible():
+                                    with page.expect_file_chooser(timeout=10000) as fc_info:
+                                        upload_span.click(force=True)
+                                    file_chooser = fc_info.value
+                                    file_chooser.set_files(rd_file)
+                                    time.sleep(2)
+                                    try:
+                                        page.wait_for_load_state("networkidle", timeout=15000)
+                                    except PlaywrightTimeoutError:
+                                        pass
+                                    dismiss_modal(page, logger)
+                                    logger.info(f"    RD file uploaded (rescan): {rd_file}")
+                                else:
+                                    logger.warning(f"    Upload link not found for row {row_index} (rescan)")
+                            except Exception as e:
+                                logger.warning(f"    Error uploading RD file (rescan): {e}")
+
+                        success_count += 1
+                        _did_postback = True
+                        break
+                    except Exception as e:
+                        logger.error(f"  {date_text}: Error setting reserve duty (rescan): {e}")
+                continue
+
             # Check absence symbols that need deletion
             if row.get("hasSymbolSelect"):
                 current_symbol = row.get("currentSymbol", "")
                 absence_symbols = {"2", "5", "6"}
+                if rd_symbol:
+                    absence_symbols.add(rd_symbol)
                 if current_symbol in absence_symbols:
                     try:
                         page.evaluate("""
@@ -1570,8 +1813,8 @@ def fill_all_hours(page: Page, workdays: list[date], entry_time: str,
 
         day_num = int(date_ddmm.split("/")[0])
 
-        # Skip vacation and sick days (already handled in pass 1)
-        if day_num in vacation_days or day_num in sick_days:
+        # Skip vacation, sick, and reserve duty days (already handled in pass 1)
+        if day_num in vacation_days or day_num in sick_days or day_num in rd_days:
             continue
 
         # CRITICAL: If the page/browser has closed, stop immediately
@@ -1863,7 +2106,8 @@ def main():
                 page, workdays, args.start_time, args.end_time,
                 args.project, args.present_weekdays, args.present_dates,
                 args.vacation_days,
-                args.sick_days_set, args.sick_file, logger
+                args.sick_days_set, args.sick_file,
+                args.rd_days_set, args.rd_file, logger
             )
 
             # Summary

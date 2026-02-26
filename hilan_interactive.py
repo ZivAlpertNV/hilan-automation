@@ -260,14 +260,15 @@ def get_israeli_holidays(year: int) -> dict:
 
 def display_calendar(year: int, month: int, vacation_days: set = None,
                      sick_days: set = None, present_weekdays: set = None,
-                     present_dates: set = None):
+                     present_dates: set = None, rd_days: set = None):
     """
     Display a visual calendar for the given month.
     Colors:
       - Green: regular workday (w.home)
       - Cyan: presence day (in office) - weekly recurring or specific date
-      - Blue: vacation
+      - Magenta: vacation
       - Yellow: sick
+      - Blue: reserve duty (מילואים)
       - Red: holiday
       - Gray: weekend (Fri/Sat)
     """
@@ -275,6 +276,7 @@ def display_calendar(year: int, month: int, vacation_days: set = None,
     sick_days = sick_days or set()
     present_weekdays = present_weekdays or set()
     present_dates = present_dates or set()
+    rd_days = rd_days or set()
 
     holiday_map = get_israeli_holidays(year)
     _, num_days = calendar.monthrange(year, month)
@@ -318,14 +320,17 @@ def display_calendar(year: int, month: int, vacation_days: set = None,
         is_weekend = wd in (4, 5)  # Fri, Sat
         is_vacation = day_num in vacation_days
         is_sick = day_num in sick_days
+        is_rd = day_num in rd_days
         is_workday = wd in (6, 0, 1, 2, 3) and not is_holiday  # Sun-Thu, no holiday
         is_presence = is_workday and (wd in present_weekdays or day_num in present_dates)
 
-        # Determine display style (priority: vacation > sick > holiday > presence > workday > weekend)
+        # Determine display style (priority: vacation > sick > rd > holiday > presence > workday > weekend)
         if is_vacation and is_workday:
             cell = magenta(cell)
         elif is_sick and is_workday:
             cell = yellow(cell)
+        elif is_rd and is_workday:
+            cell = blue(cell)
         elif is_holiday:
             cell = red(cell)
         elif is_weekend:
@@ -358,6 +363,8 @@ def display_calendar(year: int, month: int, vacation_days: set = None,
         legend_parts.append(magenta("##") + " Vacation")
     if sick_days:
         legend_parts.append(yellow("##") + " Sick")
+    if rd_days:
+        legend_parts.append(blue("##") + " Reserve Duty")
     legend_parts.append(red("##") + " Holiday")
     legend_parts.append(gray("##") + " Weekend (Fri/Sat)")
 
@@ -378,12 +385,13 @@ def display_calendar(year: int, month: int, vacation_days: set = None,
 
 def display_compact_calendar(year: int, month: int, vacation_days: set = None,
                              sick_days: set = None, present_weekdays: set = None,
-                             present_dates: set = None):
+                             present_dates: set = None, rd_days: set = None):
     """Display a compact calendar for the edit screen (fewer lines, inline legend)."""
     vacation_days = vacation_days or set()
     sick_days = sick_days or set()
     present_weekdays = present_weekdays or set()
     present_dates = present_dates or set()
+    rd_days = rd_days or set()
 
     holiday_map = get_israeli_holidays(year)
     _, num_days = calendar.monthrange(year, month)
@@ -420,6 +428,7 @@ def display_compact_calendar(year: int, month: int, vacation_days: set = None,
         is_weekend = wd in (4, 5)
         is_vacation = day_num in vacation_days
         is_sick = day_num in sick_days
+        is_rd = day_num in rd_days
         is_workday = wd in (6, 0, 1, 2, 3) and not is_holiday
         is_presence = is_workday and (wd in present_weekdays or day_num in present_dates)
 
@@ -427,6 +436,8 @@ def display_compact_calendar(year: int, month: int, vacation_days: set = None,
             cell = magenta(cell)
         elif is_sick and is_workday:
             cell = yellow(cell)
+        elif is_rd and is_workday:
+            cell = blue(cell)
         elif is_holiday:
             cell = red(cell)
         elif is_weekend:
@@ -454,6 +465,8 @@ def display_compact_calendar(year: int, month: int, vacation_days: set = None,
         parts.append(magenta("##") + " Vacation")
     if sick_days:
         parts.append(yellow("##") + " Sick")
+    if rd_days:
+        parts.append(blue("##") + " RD")
     parts.append(red("##") + " Holiday")
     parts.append(gray("##") + " Wknd")
     print("  " + "  ".join(parts))
@@ -513,6 +526,13 @@ def display_summary(params: dict):
     else:
         print(f"  {'Sick days:':<20} {dim('None')}")
 
+    if params.get('rd_days'):
+        print(f"  {'RD days (מילואים):':<20} {params['rd_days']}")
+        if params.get('rd_file'):
+            print(f"  {'RD file:':<20} {params['rd_file']}")
+    else:
+        print(f"  {'RD days (מילואים):':<20} {dim('None')}")
+
     print(f"  {'Headless:':<20} {'Yes' if params.get('headless') else 'No (browser visible)'}")
     print(f"  {'Dry-run:':<20} {'Yes (no changes)' if params.get('dry_run') else 'No (real fill)'}")
     print()
@@ -530,12 +550,14 @@ def display_summary(params: dict):
     vacation_set = parse_day_ranges(params['vacation']) if params.get('vacation') else set()
     sick_set = parse_day_ranges(params['sick_days']) if params.get('sick_days') else set()
     present_dates_set = parse_day_ranges(params['present_dates']) if params.get('present_dates') else set()
+    rd_set = parse_day_ranges(params['rd_days']) if params.get('rd_days') else set()
 
     display_calendar(params['year'], params['month'],
                      vacation_days=vacation_set,
                      sick_days=sick_set,
                      present_weekdays=present_weekdays,
-                     present_dates=present_dates_set)
+                     present_dates=present_dates_set,
+                     rd_days=rd_set)
 
 
 def build_command(params: dict) -> list[str]:
@@ -562,6 +584,10 @@ def build_command(params: dict) -> list[str]:
         cmd += ["--sick-days", params["sick_days"]]
     if params.get("sick_file"):
         cmd += ["--sick-file", params["sick_file"]]
+    if params.get("rd_days"):
+        cmd += ["--rd-days", params["rd_days"]]
+    if params.get("rd_file"):
+        cmd += ["--rd-file", params["rd_file"]]
     if params.get("headless"):
         cmd += ["--headless"]
     if params.get("dry_run"):
@@ -658,8 +684,9 @@ def edit_params(params: dict) -> dict:
         ("9",  "Office dt",  "present_dates"),
         ("10", "Vacation",   "vacation"),
         ("11", "Sick days",  "sick_days"),
-        ("12", "Headless",   "headless"),
-        ("13", "Dry-run",    "dry_run"),
+        ("12", "RD days",    "rd_days"),
+        ("13", "Headless",   "headless"),
+        ("14", "Dry-run",    "dry_run"),
     ]
 
     while True:
@@ -677,11 +704,13 @@ def edit_params(params: dict) -> dict:
         vac_set = parse_day_ranges(params['vacation']) if params.get('vacation') else set()
         sick_set = parse_day_ranges(params['sick_days']) if params.get('sick_days') else set()
         pd_set = parse_day_ranges(params['present_dates']) if params.get('present_dates') else set()
+        rd_set = parse_day_ranges(params['rd_days']) if params.get('rd_days') else set()
 
         print()
         display_compact_calendar(params["year"], params["month"],
                                  vacation_days=vac_set, sick_days=sick_set,
-                                 present_weekdays=pw_set, present_dates=pd_set)
+                                 present_weekdays=pw_set, present_dates=pd_set,
+                                 rd_days=rd_set)
 
         # Two-column parameter table
         print()
@@ -716,7 +745,24 @@ def edit_params(params: dict) -> dict:
                     print(red(f"  * Vacation and sick days overlap on: {sorted(overlap)}"))
                     print(red("  * Fix vacation (10) or sick days (11) before continuing."))
                     continue
-            # Validate no overlap between present_dates and vacation/sick
+            # Validate no overlap between rd and vacation/sick
+            if params.get("rd_days"):
+                rd_set = parse_day_ranges(params["rd_days"])
+                if params.get("vacation"):
+                    vac_set = parse_day_ranges(params["vacation"])
+                    overlap = rd_set & vac_set
+                    if overlap:
+                        print(red(f"  * RD and vacation overlap on: {sorted(overlap)}"))
+                        print(red("  * Fix RD days (12) or vacation (10) before continuing."))
+                        continue
+                if params.get("sick_days"):
+                    sick_set = parse_day_ranges(params["sick_days"])
+                    overlap = rd_set & sick_set
+                    if overlap:
+                        print(red(f"  * RD and sick days overlap on: {sorted(overlap)}"))
+                        print(red("  * Fix RD days (12) or sick days (11) before continuing."))
+                        continue
+            # Validate no overlap between present_dates and vacation/sick/rd
             if params.get("present_dates"):
                 pres_set = parse_day_ranges(params["present_dates"])
                 if params.get("vacation"):
@@ -732,6 +778,13 @@ def edit_params(params: dict) -> dict:
                     if overlap:
                         print(red(f"  * Present dates and sick days overlap on: {sorted(overlap)}"))
                         print(red("  * Fix present dates (9) or sick days (11) before continuing."))
+                        continue
+                if params.get("rd_days"):
+                    rd_set = parse_day_ranges(params["rd_days"])
+                    overlap = pres_set & rd_set
+                    if overlap:
+                        print(red(f"  * Present dates and RD days overlap on: {sorted(overlap)}"))
+                        print(red("  * Fix present dates (9) or RD days (12) before continuing."))
                         continue
             break
 
@@ -819,6 +872,14 @@ def edit_params(params: dict) -> dict:
                 if overlap:
                     print(red(f"  * Warning: overlaps with sick days on days: {sorted(overlap)}"))
                     print(red("  * Please fix present dates or sick days."))
+            # Check overlap with RD
+            if params.get("rd_days") and params.get("present_dates"):
+                pres_set = parse_day_ranges(params["present_dates"])
+                rd_set = parse_day_ranges(params["rd_days"])
+                overlap = pres_set & rd_set
+                if overlap:
+                    print(red(f"  * Warning: overlaps with RD days on days: {sorted(overlap)}"))
+                    print(red("  * Please fix present dates or RD days."))
 
         elif key == "vacation":
             print(dim("  Supports ranges: 8-12 or 1,3,15 or 1-3,15,20-22"))
@@ -860,6 +921,44 @@ def edit_params(params: dict) -> dict:
                         else:
                             print(red(f"  * File not found: {sick_file}"))
 
+        elif key == "rd_days":
+            print(dim("  Reserve duty days (מילואים). Requires a file (צו מילואים)."))
+            print(dim("  Supports ranges: 5-7 or 10,11,12 or 5-7,15"))
+            print(dim("  Leave empty to clear"))
+            params["rd_days"] = ask(
+                "Reserve duty days",
+                default=params.get("rd_days", ""),
+                validator=validate_day_ranges,
+            )
+            # Check overlap with vacation
+            if params.get("rd_days") and params.get("vacation"):
+                rd_set = parse_day_ranges(params["rd_days"])
+                vac_set = parse_day_ranges(params["vacation"])
+                overlap = rd_set & vac_set
+                if overlap:
+                    print(red(f"  * Warning: overlaps with vacation on days: {sorted(overlap)}"))
+                    print(red("  * Please fix RD days or vacation days."))
+            # Check overlap with sick
+            if params.get("rd_days") and params.get("sick_days"):
+                rd_set = parse_day_ranges(params["rd_days"])
+                sick_set = parse_day_ranges(params["sick_days"])
+                overlap = rd_set & sick_set
+                if overlap:
+                    print(red(f"  * Warning: overlaps with sick days on days: {sorted(overlap)}"))
+                    print(red("  * Please fix RD days or sick days."))
+            # Handle RD file
+            params["rd_file"] = ""
+            if params["rd_days"]:
+                rd_count = len(parse_day_ranges(params["rd_days"]))
+                print(yellow(f"  * {rd_count} reserve duty day(s) - file required."))
+                while True:
+                    rd_file = ask("Path to reserve duty order file", required=True)
+                    if Path(rd_file).exists():
+                        params["rd_file"] = rd_file
+                        break
+                    else:
+                        print(red(f"  * File not found: {rd_file}"))
+
         elif key == "headless":
             params["headless"] = ask_yes_no("Run headless (no browser window)?",
                                             default=params.get("headless", False))
@@ -890,14 +989,14 @@ def collect_params() -> dict | None:
     # --- Step 1: Credentials ---
     clear_screen()
     _print_header()
-    print(bold("  Step 1/7 — Login Credentials"))
+    print(bold("  Step 1/8 — Login Credentials"))
     print()
 
     params["user"] = ask("Employee number", required=True)
 
     clear_screen()
     _print_header()
-    print(bold("  Step 1/7 — Login Credentials"))
+    print(bold("  Step 1/8 — Login Credentials"))
     print()
     print(f"  Employee#: {params['user']}")
     print()
@@ -920,7 +1019,7 @@ def collect_params() -> dict | None:
     # --- Step 2: Month ---
     clear_screen()
     _print_header()
-    print(bold("  Step 2/7 — Select Month"))
+    print(bold("  Step 2/8 — Select Month"))
     print()
 
     params["month"] = int(ask(
@@ -931,7 +1030,7 @@ def collect_params() -> dict | None:
 
     clear_screen()
     _print_header()
-    print(bold("  Step 2/7 — Select Month"))
+    print(bold("  Step 2/8 — Select Month"))
     print()
     print(f"  Month: {params['month']}")
     print()
@@ -953,14 +1052,14 @@ def collect_params() -> dict | None:
     # --- Step 4: Project ---
     clear_screen()
     _print_header()
-    print(bold(f"  Step 3/7 — Project  ({calendar.month_name[params['month']]} {params['year']})"))
+    print(bold(f"  Step 3/8 — Project  ({calendar.month_name[params['month']]} {params['year']})"))
     print()
     params["project"] = ask("Project code (e.g., 12086 - AGUR IC)", required=True)
 
     # --- Step 5: Vacation days ---
     clear_screen()
     _print_header()
-    print(bold(f"  Step 4/7 — Vacation  ({calendar.month_name[params['month']]} {params['year']})"))
+    print(bold(f"  Step 4/8 — Vacation  ({calendar.month_name[params['month']]} {params['year']})"))
     print()
     print(dim("  Supports ranges: 8-12 or 1,3,15 or 1-3,15,20-22"))
     print(dim("  Leave empty if no vacation this month"))
@@ -974,7 +1073,7 @@ def collect_params() -> dict | None:
     # --- Step 6: Sick days ---
     clear_screen()
     _print_header()
-    print(bold(f"  Step 5/7 — Sick Days  ({calendar.month_name[params['month']]} {params['year']})"))
+    print(bold(f"  Step 5/8 — Sick Days  ({calendar.month_name[params['month']]} {params['year']})"))
     print()
     print(dim("  1-2 days = sick day declaration, 3+ = sick (needs certificate)"))
     print(dim("  Supports ranges: 8-10 or 5,6 or 1-3,15"))
@@ -1007,10 +1106,53 @@ def collect_params() -> dict | None:
             print(red("  * You can fix this in the edit screen."))
             input(dim("  Press Enter to continue..."))
 
+    # --- Step 6.5: Reserve duty days ---
+    clear_screen()
+    _print_header()
+    print(bold(f"  Step 6/8 — Reserve Duty (מילואים)  ({calendar.month_name[params['month']]} {params['year']})"))
+    print()
+    print(dim("  Supports ranges: 5-7 or 10,11,12 or 5-7,15"))
+    print(dim("  Requires attaching a reserve duty order file (צו מילואים)"))
+    print(dim("  Leave empty if no reserve duty this month"))
+    print()
+    params["rd_days"] = ask(
+        "Reserve duty days",
+        default="",
+        validator=validate_day_ranges,
+    )
+    params["rd_file"] = ""
+    if params["rd_days"]:
+        rd_count = len(parse_day_ranges(params["rd_days"]))
+        print(yellow(f"  * {rd_count} reserve duty day(s) - file required."))
+        while True:
+            rd_file = ask("Path to reserve duty order file", required=True)
+            if Path(rd_file).exists():
+                params["rd_file"] = rd_file
+                break
+            else:
+                print(red(f"  * File not found: {rd_file}"))
+    # Check overlap with vacation/sick
+    if params.get("rd_days"):
+        rd_set = parse_day_ranges(params["rd_days"])
+        if params.get("vacation"):
+            vac_set = parse_day_ranges(params["vacation"])
+            overlap = rd_set & vac_set
+            if overlap:
+                print(red(f"  * Warning: RD and vacation overlap on days: {sorted(overlap)}"))
+                print(red("  * You can fix this in the edit screen."))
+                input(dim("  Press Enter to continue..."))
+        if params.get("sick_days"):
+            sick_set = parse_day_ranges(params["sick_days"])
+            overlap = rd_set & sick_set
+            if overlap:
+                print(red(f"  * Warning: RD and sick overlap on days: {sorted(overlap)}"))
+                print(red("  * You can fix this in the edit screen."))
+                input(dim("  Press Enter to continue..."))
+
     # --- Step 7: Office days ---
     clear_screen()
     _print_header()
-    print(bold(f"  Step 6/7 — Office Days  ({calendar.month_name[params['month']]} {params['year']})"))
+    print(bold(f"  Step 7/8 — Office Days  ({calendar.month_name[params['month']]} {params['year']})"))
     print()
     print(dim("  Format: 1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu"))
     print(dim("  Example: 2,4  (Mon and Wed in office every week)"))
@@ -1025,7 +1167,7 @@ def collect_params() -> dict | None:
     # --- Display the calendar ---
     clear_screen()
     _print_header()
-    print(bold(f"  Step 7/7 — Review  ({calendar.month_name[params['month']]} {params['year']})"))
+    print(bold(f"  Step 8/8 — Review  ({calendar.month_name[params['month']]} {params['year']})"))
 
     user_to_python_weekday = {1: 6, 2: 0, 3: 1, 4: 2, 5: 3}
     pw_set = set()
@@ -1036,10 +1178,11 @@ def collect_params() -> dict | None:
                 pw_set.add(user_to_python_weekday[int(d)])
     vac_set = parse_day_ranges(params['vacation']) if params.get('vacation') else set()
     sick_set = parse_day_ranges(params['sick_days']) if params.get('sick_days') else set()
+    rd_set = parse_day_ranges(params['rd_days']) if params.get('rd_days') else set()
 
     display_calendar(params['year'], params['month'],
                      vacation_days=vac_set, sick_days=sick_set,
-                     present_weekdays=pw_set)
+                     present_weekdays=pw_set, rd_days=rd_set)
 
     # --- Go to edit screen for fine-tuning ---
     params = edit_params(params)
