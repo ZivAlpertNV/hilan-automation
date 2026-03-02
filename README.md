@@ -20,11 +20,28 @@
 
 ## דרישות מקדימות
 
+- **Git** — [הורדה מכאן](https://git-scm.com/downloads)
+  - נדרש לשכפול הפרויקט (`git clone`)
+  - ב-Windows: הורידו את ה-installer והריצו עם ברירות המחדל
+  - ב-Mac: אפשר גם דרך Homebrew: `brew install git`
+
 - **Python 3.10+** — [הורדה מכאן](https://www.python.org/downloads/)
   - ב-Windows: סמנו "Add Python to PATH" בזמן ההתקנה
   - ב-Mac: אפשר גם דרך Homebrew: `brew install python`
 
 ## התקנה
+
+### 0. התקנת Git (אם עדיין לא מותקן — אחרת ניתן לדלג)
+
+בדקו אם Git מותקן:
+```bash
+git --version
+```
+אם מופיעה גרסה (למשל `git version 2.x.x`) — **דלגו לשלב 1**.
+
+אם לא, התקינו מכאן: [https://git-scm.com/downloads](https://git-scm.com/downloads)
+- **Windows:** הורידו את ה-installer והריצו עם ברירות המחדל
+- **Mac:** `brew install git` או הורידו מהאתר
 
 ### 1. שכפול הפרויקט
 
