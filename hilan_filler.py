@@ -662,11 +662,31 @@ def login(page: Page, username: str, password: str, logger: logging.Logger):
     logger.info(f"Current URL after login: {current_url}")
 
     if "login" in current_url.lower():
-        # Check for error message
-        error_el = page.query_selector(".error, .h-centered-field.error, [role='alert']")
-        error_text = error_el.inner_text() if error_el else "Unknown error"
-        take_screenshot(page, "03_login_failed", logger)
-        raise RuntimeError(f"Login failed! Error: {fix_rtl(error_text)}")
+        # Check if this is an SMS/2FA screen (still on login URL but waiting for code)
+        page_text = page.inner_text("body")
+        sms_keywords = ["sms", "קוד", "code", "otp", "verification", "אימות", "חד פעמי"]
+        is_2fa = any(kw in page_text.lower() for kw in sms_keywords)
+
+        if is_2fa:
+            logger.info("2FA/SMS screen detected — please enter the code in the browser window.")
+            print("\n" + "="*60)
+            print("SMS CODE REQUIRED — enter the code in the browser window.")
+            print("The script will continue automatically after you confirm.")
+            print("="*60 + "\n")
+            # Wait up to 2 minutes for the user to enter the SMS code and proceed
+            try:
+                page.wait_for_url(lambda url: "login" not in url.lower(), timeout=120000)
+                time.sleep(3)
+                logger.info("2FA completed, login successful!")
+            except PlaywrightTimeoutError:
+                take_screenshot(page, "03_login_failed_2fa_timeout", logger)
+                raise RuntimeError("Login failed! Timed out waiting for SMS code entry (2 minutes).")
+        else:
+            # Regular login failure
+            error_el = page.query_selector(".error, .h-centered-field.error, [role='alert']")
+            error_text = error_el.inner_text() if error_el else "Unknown error"
+            take_screenshot(page, "03_login_failed", logger)
+            raise RuntimeError(f"Login failed! Error: {fix_rtl(error_text)}")
 
     logger.info("Login successful!")
 
