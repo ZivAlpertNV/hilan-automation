@@ -19,6 +19,7 @@ os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 import argparse
 import calendar
 import logging
+import re
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -251,6 +252,16 @@ Examples:
         default=500,
         help="Slow down Playwright actions by this many ms (default: 500)",
     )
+    parser.add_argument(
+        "--skip-dates",
+        default=None,
+        help=(
+            "Days of the month to skip entirely (no interaction with Hilan at all). "
+            "Use for days Hilan marks as unauthorized/restricted (e.g., הדממה). "
+            "Supports: individual days (1,2,3), ranges (1-6), or both (1-3,15). "
+            "Example: --skip-dates 24"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -337,6 +348,23 @@ Examples:
         sick_path = Path(args.sick_file)
         if not sick_path.exists():
             parser.error(f"--sick-file: file not found: {args.sick_file}")
+
+    # Parse skip-dates into a set of day-of-month numbers (completely excluded from processing)
+    args.skip_dates_set = set()
+    if args.skip_dates:
+        try:
+            for part in args.skip_dates.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if "-" in part:
+                    start, end = part.split("-", 1)
+                    for d in range(int(start.strip()), int(end.strip()) + 1):
+                        args.skip_dates_set.add(d)
+                else:
+                    args.skip_dates_set.add(int(part))
+        except ValueError:
+            parser.error("--skip-dates must be comma-separated days or ranges (e.g., 24 or 24,27)")
 
     # Parse vacation days into a set of day-of-month numbers
     args.vacation_days = set()
@@ -437,19 +465,35 @@ Examples:
 # ==============================================================================
 
 def get_israeli_holidays(year: int) -> set:
-    """Get all Israeli holidays for the given year."""
+    """Get Israeli public holidays + חול המועד (Passover/Sukkot intermediate days).
+
+    Hilan rejects reporting for חול המועד just like full holidays, so we skip them.
+    """
     il_holidays = holidays.Israel(years=year)
-    return set(il_holidays.keys())
+    holiday_set = set(il_holidays.keys())
+
+    for d, name in il_holidays.items():
+        if "סוכות" in name:
+            # Days 2-7 of Sukkot (including הושענא רבה) are חול המועד
+            for i in range(1, 7):
+                holiday_set.add(d + timedelta(days=i))
+        elif "פסח" in name and "שביעי" not in name:
+            # Days 2-6 of Passover are חול המועד (day 7 = שביעי של פסח is already in the library)
+            for i in range(1, 6):
+                holiday_set.add(d + timedelta(days=i))
+
+    return holiday_set
 
 
-def get_workdays(year: int, month: int) -> list[date]:
+def get_workdays(year: int, month: int, skip_dates: set = None) -> list[date]:
     """
     Calculate all workdays (Sunday-Thursday) in the given month,
-    excluding Israeli holidays.
+    excluding Israeli holidays and any explicitly skipped dates.
     Includes ALL days of the month (including future) so the script
     can fix incorrect symbols on future days too.
     """
     holiday_dates = get_israeli_holidays(year)
+    skip_dates = skip_dates or set()
 
     # Get the number of days in the month
     _, num_days = calendar.monthrange(year, month)
@@ -473,6 +517,10 @@ def get_workdays(year: int, month: int) -> list[date]:
 
         # Skip holidays
         if d in holiday_dates:
+            continue
+
+        # Skip explicitly excluded dates (e.g., הדממה days that Hilan won't accept)
+        if d.day in skip_dates:
             continue
 
         workdays.append(d)
@@ -515,7 +563,8 @@ def print_workdays_summary(workdays: list[date], year: int, month: int,
         if d > today:
             skipped_future.append(d)
         elif d in holiday_dates:
-            holiday_name = holidays.Israel(years=year).get(d, "Holiday")
+            official = holidays.Israel(years=year)
+            holiday_name = official.get(d, "חול המועד")
             skipped_holidays.append((d, holiday_name))
         elif weekday in (4, 5):  # Fri, Sat
             skipped_weekends.append(d)
@@ -2028,6 +2077,74 @@ def fill_all_hours(page: Page, workdays: list[date], entry_time: str,
                 if post_save_check:
                     logger.warning(f"Post-save messages: {post_save_check}")
                     dismiss_modal(page, logger)
+
+                    # Detect "Unauthorized reporting date" errors and auto-retry without those rows
+                    unauthorized_dates = []
+                    for msg in post_save_check:
+                        if "Unauthorized reporting date" in msg or "תאריך לא מורשה" in msg:
+                            m = re.search(r"(\d{2}/\d{2})", msg)
+                            if m:
+                                unauthorized_dates.append(m.group(1))
+
+                    if unauthorized_dates:
+                        logger.warning(f"  Unauthorized dates blocked save: {unauthorized_dates}")
+                        logger.warning("  These are הדממה/חול המועד days — fill them manually in Hilan.")
+                        logger.info("  Clearing those rows and retrying save...")
+
+                        rows_info_retry = get_grid_rows_info(page, logger)
+                        for row in rows_info_retry:
+                            date_ddmm = row["dateText"].split(" ")[0]
+                            if date_ddmm in unauthorized_dates:
+                                entry_id = row.get("entryInputId")
+                                exit_id = row.get("exitInputId")
+                                if entry_id and exit_id:
+                                    page.evaluate("""
+                                        (params) => {
+                                            const e = document.getElementById(params.entryId);
+                                            const x = document.getElementById(params.exitId);
+                                            if (e) { e.value = ''; e.dispatchEvent(new Event('change', {bubbles: true})); }
+                                            if (x) { x.value = ''; x.dispatchEvent(new Event('change', {bubbles: true})); }
+                                        }
+                                    """, {"entryId": entry_id, "exitId": exit_id})
+                                    logger.info(f"  Cleared entry/exit for {date_ddmm}")
+
+                        time.sleep(1)
+                        save_btn2 = page.query_selector(SEL_SAVE_BUTTON)
+                        if save_btn2:
+                            save_btn2.click()
+                            try:
+                                page.wait_for_load_state("networkidle", timeout=30000)
+                            except PlaywrightTimeoutError:
+                                pass
+                            time.sleep(3)
+                            post_save_check2 = page.evaluate("""
+                                () => {
+                                    const errors = [];
+                                    const mpeBg = document.getElementById('MPEBehavior_backgroundElement');
+                                    if (mpeBg && mpeBg.style.display !== 'none') {
+                                        const popup = document.getElementById('ctl00_theBasePanel');
+                                        if (popup) {
+                                            const iframe = popup.querySelector('iframe');
+                                            if (iframe && iframe.contentDocument) {
+                                                try { errors.push('IFRAME:' + iframe.contentDocument.body.innerText); }
+                                                catch(e) { errors.push('IFRAME:cross-origin'); }
+                                            }
+                                            errors.push('POPUP:' + popup.innerText.substring(0, 500));
+                                        }
+                                    }
+                                    document.querySelectorAll('.error, .ErrorLabel, span[id*="error" i]').forEach(el => {
+                                        if (el.offsetParent !== null && el.innerText.trim())
+                                            errors.push('ERROR:' + el.innerText.trim());
+                                    });
+                                    return errors;
+                                }
+                            """)
+                            if post_save_check2:
+                                logger.warning(f"Post-save retry messages: {post_save_check2}")
+                                dismiss_modal(page, logger)
+                            else:
+                                logger.info("  Retry save succeeded!")
+
                 logger.info("Save completed!")
             else:
                 logger.warning("Save button not found! Trying alternative selector...")
@@ -2073,7 +2190,7 @@ def main():
     logger.info("=" * 60)
 
     # Calculate workdays
-    workdays = get_workdays(args.year, args.month)
+    workdays = get_workdays(args.year, args.month, skip_dates=args.skip_dates_set)
 
     if not workdays:
         logger.warning(f"No workdays found for {args.month}/{args.year}!")
